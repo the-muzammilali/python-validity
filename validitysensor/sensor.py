@@ -272,7 +272,7 @@ def host_match_score(img1_bytes: bytes, img2_bytes: bytes) -> float:
         peak = float(np.max(np.abs(corr)))
         if peak > max_peak:
             max_peak = peak
-            if max_peak > 0.50:
+            if max_peak >= 0.18:
                 break
 
     return max_peak
@@ -929,11 +929,22 @@ class Sensor:
 
     # TODO: Better typing information needed.
     def match_host_finger(self, verify_img: bytes) -> typing.Tuple[int, int, bytes]:
-        import hashlib, glob
+        import hashlib, glob, time
+        import numpy as np
+        from PIL import Image
+
+        t0 = time.time()
         tdir = get_templates_dir()
         best_match = None
         best_score = 0.0
 
+        # Precompute verify image FFT once
+        a = np.frombuffer(verify_img, dtype=np.uint8).reshape((56, 144)).astype(np.float32)
+        hann = get_hann_window()
+        a_norm = (a - a.mean()) * hann
+        conj_fa = np.conj(np.fft.fft2(a_norm))
+
+        loaded_templates = []
         for tpl_path in glob.glob(os.path.join(tdir, "*.dat")):
             fname = os.path.basename(tpl_path)[:-4]
             parts = fname.rsplit('_', 1)
@@ -946,26 +957,66 @@ class Sensor:
                 subtype = 2
 
             try:
+                if '-' in u_ident:
+                    uid_int = int(u_ident.split('-')[-1])
+                else:
+                    uid_int = int(u_ident)
+            except ValueError:
+                uid_int = 1000
+
+            try:
                 with open(tpl_path, 'rb') as fp:
                     raw = fp.read()
                 raw_samples = [raw[i:i+8064] for i in range(0, len(raw), 8064) if i+8064 <= len(raw)]
+                if raw_samples:
+                    loaded_templates.append((uid_int, subtype, raw_samples))
             except Exception:
                 continue
 
-            for sample in raw_samples:
-                score = host_match_score(verify_img, sample)
-                if score > best_score:
-                    best_score = score
-                    try:
-                        if '-' in u_ident:
-                            uid_int = int(u_ident.split('-')[-1])
-                        else:
-                            uid_int = int(u_ident)
-                    except ValueError:
-                        uid_int = 1000
-                    best_match = (uid_int, subtype)
+        matched_early = False
 
-        logging.info(f"Host match evaluation: best_score={best_score:.4f}, threshold=0.12, matched={best_score >= 0.12}, best_match={best_match}")
+        # Pass 1: Quick direct check (0° rotation across all template samples)
+        for uid_int, subtype, samples in loaded_templates:
+            for sample in samples:
+                b_raw = np.frombuffer(sample, dtype=np.uint8).reshape((56, 144)).astype(np.float32)
+                b_norm = (b_raw - b_raw.mean()) * hann
+                fb = np.fft.fft2(b_norm)
+                cross_power = (fb * conj_fa) / (np.abs(fb * conj_fa) + 1e-9)
+                peak = float(np.max(np.abs(np.fft.ifft2(cross_power))))
+                if peak > best_score:
+                    best_score = peak
+                    best_match = (uid_int, subtype)
+                if peak >= 0.18:
+                    matched_early = True
+                    break
+            if matched_early:
+                break
+
+        # Pass 2: Angular tilt sweep if Pass 1 didn't reach high confidence
+        if not matched_early:
+            for uid_int, subtype, samples in loaded_templates:
+                for sample in samples:
+                    b_raw = np.frombuffer(sample, dtype=np.uint8).reshape((56, 144))
+                    b_pil = Image.fromarray(b_raw)
+                    for angle in [-3, 3, -6, 6, -9, 9, -12, 12]:
+                        b_rot = np.array(b_pil.rotate(angle, resample=Image.BILINEAR)).astype(np.float32)
+                        b_norm = (b_rot - b_rot.mean()) * hann
+                        fb = np.fft.fft2(b_norm)
+                        cross_power = (fb * conj_fa) / (np.abs(fb * conj_fa) + 1e-9)
+                        peak = float(np.max(np.abs(np.fft.ifft2(cross_power))))
+                        if peak > best_score:
+                            best_score = peak
+                            best_match = (uid_int, subtype)
+                        if peak >= 0.18:
+                            matched_early = True
+                            break
+                    if matched_early:
+                        break
+                if matched_early:
+                    break
+
+        elapsed_ms = (time.time() - t0) * 1000.0
+        logging.info(f"Host match evaluation: best_score={best_score:.4f}, threshold=0.12, matched={best_score >= 0.12}, best_match={best_match}, elapsed={elapsed_ms:.1f}ms")
         if best_match and best_score >= 0.12:
             hsh = hashlib.sha256(verify_img).digest()
             return best_match[0], best_match[1], hsh
