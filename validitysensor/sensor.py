@@ -1016,8 +1016,8 @@ class Sensor:
                     break
 
         elapsed_ms = (time.time() - t0) * 1000.0
-        logging.info(f"Host match evaluation: best_score={best_score:.4f}, threshold=0.12, matched={best_score >= 0.12}, best_match={best_match}, elapsed={elapsed_ms:.1f}ms")
-        if best_match and best_score >= 0.12:
+        logging.info(f"Host match evaluation: best_score={best_score:.4f}, threshold=0.11, matched={best_score >= 0.11}, best_match={best_match}, elapsed={elapsed_ms:.1f}ms")
+        if best_match and best_score >= 0.11:
             hsh = hashlib.sha256(verify_img).digest()
             return best_match[0], best_match[1], hsh
         else:

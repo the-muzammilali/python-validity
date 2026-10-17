@@ -27,7 +27,7 @@ from validitysensor.init_data_dir import PYTHON_VALIDITY_DATA_DIR, init_data_dir
 from validitysensor.sensor import sensor, RebootException
 from validitysensor.sid import sid_from_string
 from validitysensor.tls import tls
-from validitysensor.usb import usb
+from validitysensor.usb import usb, CancelledException
 from validitysensor.fingerprint_constants import finger_ids
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -162,6 +162,8 @@ class Device(dbus.service.Object):
                     self.VerifyStatus('verify-match', True)
                 else:
                     self.VerifyStatus('verify-no-match', True)
+            except CancelledException:
+                logging.info('Verification cancelled by client')
             except usb_core.USBError as e:
                 logging.exception(e)
                 self.VerifyStatus('verify-no-match', True)
